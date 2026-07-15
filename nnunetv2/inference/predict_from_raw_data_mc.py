@@ -3,15 +3,20 @@ import inspect
 import types
 import warnings
 import multiprocessing
+import numpy as np
+import torch
+import SimpleITK as sitk
+import nibabel
+import argparse
+
 from copy import deepcopy
 from time import sleep
 from typing import Tuple, Union, List, Optional
-
-import numpy as np
-import torch
 from torch import nn
 from torch._dynamo import OptimizedModule
 from tqdm import tqdm
+from nnunetv2.imageio.simpleitk_reader_writer import SimpleITKIO
+from nnunetv2.imageio.nibabel_reader_writer import NibabelIO, NibabelIOWithReorient
 
 # Ensure compiled models are disabled as they don't support runtime eval/dropout overrides
 os.environ['nnUNet_compile'] = 'False'
@@ -36,40 +41,27 @@ from nnunetv2.utilities.label_handling.label_handling import convert_labelmap_to
 
 
 def inject_mc_dropout(model: nn.Module, dropout_prob: float, dimension: int):
-    import torch.nn as nn
-    try:
-        from dynamic_network_architectures.building_blocks.simple_conv_blocks import ConvDropoutNormReLU
-        has_dna = True
-    except ImportError:
-        has_dna = False
-        
+    
     dropout_op = nn.Dropout3d if dimension == 3 else nn.Dropout2d
     
     count = 0
-    if has_dna:
-        # Find ConvDropoutNormReLU modules and assign/override their dropout module
-        for m in model.modules():
-            if isinstance(m, ConvDropoutNormReLU):
-                m.dropout = dropout_op(p=dropout_prob, inplace=False)
+    
+    def _inject(module: nn.Module):
+        nonlocal count
+        for name, child in module.named_children():
+            if isinstance(child, (nn.LeakyReLU, nn.ReLU, nn.ELU)):
+                new_m = nn.Sequential(
+                    child,
+                    dropout_op(p=dropout_prob, inplace=False)
+                )
+                setattr(module, name, new_m)
                 count += 1
-                
-    if count == 0:
-        print("No ConvDropoutNormReLU modules found or dynamic-network-architectures not available.")
-        print("Falling back to activation-based dropout injection.")
-        def _inject(module: nn.Module):
-            for name, child in module.named_children():
-                if isinstance(child, (nn.LeakyReLU, nn.ReLU, nn.ELU)):
-                    new_m = nn.Sequential(
-                        child,
-                        dropout_op(p=dropout_prob, inplace=False)
-                    )
-                    setattr(module, name, new_m)
-                else:
-                    _inject(child)
-        _inject(model)
-        print("Injected dropout layers after activation functions.")
-    else:
-        print(f"Successfully injected/configured {count} ConvDropoutNormReLU dropout layers.")
+            else:
+                _inject(child)  
+
+    _inject(model)
+
+    print(f"Injected {count} dropout layers after activation functions.")
 
 
 def make_eval_with_dropout_active(model: nn.Module, dropout_prob: float, dimension: int):
@@ -81,7 +73,6 @@ def make_eval_with_dropout_active(model: nn.Module, dropout_prob: float, dimensi
         # Call the original eval to set all layers (BatchNorm, Conv, etc.) to eval mode
         original_eval()
         # Find all dropout modules and force them to train mode
-        import torch.nn as nn
         for m in model.modules():
             if isinstance(m, (nn.Dropout, nn.Dropout2d, nn.Dropout3d)):
                 m.train(True)
@@ -96,10 +87,6 @@ def make_eval_with_dropout_active(model: nn.Module, dropout_prob: float, dimensi
 
 
 def write_float_image(data: np.ndarray, output_fname: str, properties: dict, rw) -> None:
-    import SimpleITK as sitk
-    import nibabel
-    from nnunetv2.imageio.simpleitk_reader_writer import SimpleITKIO
-    from nnunetv2.imageio.nibabel_reader_writer import NibabelIO, NibabelIOWithReorient
     
     if isinstance(rw, SimpleITKIO):
         assert data.ndim == 3, 'data must be 3d'
@@ -204,6 +191,11 @@ class nnUNetPredictorMC(nnUNetPredictor):
                                              checkpoint_name: str = 'checkpoint_final.pth'):
         super().initialize_from_trained_model_folder(model_training_output_dir, use_folds, checkpoint_name)
         
+        # read the layers of the model
+        print("Layers of trained model...")
+        for name, module in self.network.named_modules():
+            print(name, module)
+
         # After network is initialized and loaded, inject MC dropout!
         print(f"Injecting Monte Carlo dropout (prob={self.dropout_prob}) into network...")
         dimension = len(self.configuration_manager.patch_size)
@@ -438,7 +430,6 @@ class nnUNetPredictorMC(nnUNetPredictor):
 
 
 def predict_entry_point():
-    import argparse
     parser = argparse.ArgumentParser(description='Use this to run Monte Carlo Dropout inference with nnU-Net.')
     parser.add_argument('-i', type=str, required=True,
                         help='input folder. Remember to use the correct channel numberings for your files (_0000 etc). '
