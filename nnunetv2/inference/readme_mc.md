@@ -34,6 +34,17 @@ python nnunetv2/inference/predict_from_raw_data_mc.py \
     -uncertainty_metrics variance entropy
 ```
 
+```bash
+python nnunetv2/inference/predict_from_raw_data_mc.py 
+    -i path_to_imagesTs/imagesTs 
+    -o path_to_out_path/pred_nnUnet_test_MC 
+    -d 1 
+    -c 3d_fullres 
+    -f 0 
+    -mc_samples 10 
+    -dropout_prob 0.2 
+    -uncertainty_metrics variance entropy 
+```
 ### Additional Parameters Added:
 - `-mc_samples`: The number of Monte Carlo runs to execute (default: `10`).
 - `-dropout_prob`: The dropout probability (default: `0.3`).

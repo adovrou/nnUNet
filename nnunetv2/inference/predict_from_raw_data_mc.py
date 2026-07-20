@@ -69,15 +69,15 @@ def make_eval_with_dropout_active(model: nn.Module, dropout_prob: float, dimensi
     original_eval = model.eval
     
     # Define our custom eval method
-    def custom_eval():
+    def custom_eval(self):
         # Call the original eval to set all layers (BatchNorm, Conv, etc.) to eval mode
         original_eval()
         # Find all dropout modules and force them to train mode
-        for m in model.modules():
+        for m in self.modules():
             if isinstance(m, (nn.Dropout, nn.Dropout2d, nn.Dropout3d)):
                 m.train(True)
                 m.p = dropout_prob  # Ensure the dropout probability is set correctly
-        return model
+        return self
         
     # Bind the custom eval method to the model instance
     model.eval = types.MethodType(custom_eval, model)
@@ -156,7 +156,7 @@ def export_uncertainty(uncertainty: np.ndarray,
     
     # Save
     rw = plans_manager.image_reader_writer_class()
-    write_float_image(uncertainty_reverted_cropping, output_file, properties_dict, rw())
+    write_float_image(uncertainty_reverted_cropping, output_file, properties_dict, rw)
 
 
 class nnUNetPredictorMC(nnUNetPredictor):
@@ -240,7 +240,45 @@ class nnUNetPredictorMC(nnUNetPredictor):
         variance_map = torch.mean(torch.var(all_probs, dim=0, unbiased=False), dim=0)
         entropy_map = -torch.sum(mean_probs * torch.log(mean_probs + 1e-8), dim=0)
         
-        return mean_logits, variance_map, entropy_map
+        # Calculate DSCs
+        all_segs = []
+        for probs_pass in all_probs:
+            if self.label_manager.has_regions:
+                seg = torch.zeros(probs_pass.shape[1:], dtype=torch.int16, device=probs_pass.device)
+                for i, c in enumerate(self.label_manager.regions_class_order):
+                    seg[probs_pass[i] > 0.5] = c
+            else:
+                seg = probs_pass.argmax(0)
+            all_segs.append(seg)
+        all_segs = torch.stack(all_segs)
+        num_total_passes = all_segs.shape[0]
+        
+        dsc_dict = {'pairwise_dscs': [], 'mean_dscs_per_class': [], 'mean_dsc_overall': 0.0}
+        foreground_classes = self.label_manager.foreground_regions if self.label_manager.has_regions else self.label_manager.foreground_labels
+        
+        if num_total_passes > 1 and len(foreground_classes) > 0:
+            all_pairwise_dscs = []
+            for i in range(num_total_passes):
+                for j in range(i + 1, num_total_passes):
+                    dscs_per_class = []
+                    for c in foreground_classes:
+                        seg_i = (all_segs[i] == c)
+                        seg_j = (all_segs[j] == c)
+                        intersection = (seg_i & seg_j).sum().float()
+                        union = seg_i.sum().float() + seg_j.sum().float()
+                        if union > 0:
+                            dsc = (2. * intersection) / union
+                        else:
+                            dsc = torch.tensor(1.0, device=all_segs.device)
+                        dscs_per_class.append(dsc.item())
+                    all_pairwise_dscs.append(dscs_per_class)
+            
+            dsc_dict['pairwise_dscs'] = all_pairwise_dscs
+            mean_dscs_per_class = np.mean(all_pairwise_dscs, axis=0).tolist()
+            dsc_dict['mean_dscs_per_class'] = mean_dscs_per_class
+            dsc_dict['mean_dsc_overall'] = float(np.mean(mean_dscs_per_class))
+        
+        return mean_logits, variance_map, entropy_map, dsc_dict
 
     def predict_from_data_iterator(self,
                                    data_iterator,
@@ -277,10 +315,14 @@ class nnUNetPredictorMC(nnUNetPredictor):
                     proceed = not check_workers_alive_and_busy(export_pool, worker_list, r, allowed_num_queued=2)
 
                 # Run custom MC prediction to get logits, variance, and entropy
-                mean_logits, variance_map, entropy_map = self.predict_mc_logits_and_uncertainties(data)
+                mean_logits, variance_map, entropy_map, dsc_dict = self.predict_mc_logits_and_uncertainties(data)
                 prediction = mean_logits.cpu().detach().numpy()
 
                 if ofile is not None:
+                    dsc_ofile = ofile + '_mc_dsc.json'
+                    print(f'Saving pairwise DSCs to {dsc_ofile}')
+                    save_json(dsc_dict, dsc_ofile)
+                    
                     print('sending off prediction to background worker for resampling and export')
                     r.append(
                         export_pool.apply_async(
@@ -295,10 +337,7 @@ class nnUNetPredictorMC(nnUNetPredictor):
                             metric_map = variance_map if metric == 'variance' else entropy_map
                             metric_np = metric_map.cpu().detach().numpy()
                             suffix = f'_uncertainty_{metric}'
-                            uncertainty_ofile = ofile.replace(
-                                self.dataset_json['file_ending'], 
-                                suffix + self.dataset_json['file_ending']
-                            )
+                            uncertainty_ofile = ofile + suffix + self.dataset_json['file_ending']
                             print(f'sending off {metric} uncertainty to background worker for resampling and export')
                             r_unc.append(
                                 export_pool.apply_async(
@@ -399,10 +438,14 @@ class nnUNetPredictorMC(nnUNetPredictor):
 
             print(f'perform_everything_on_device: {self.perform_everything_on_device}')
 
-            mean_logits, variance_map, entropy_map = self.predict_mc_logits_and_uncertainties(torch.from_numpy(data))
+            mean_logits, variance_map, entropy_map, dsc_dict = self.predict_mc_logits_and_uncertainties(torch.from_numpy(data))
             prediction = mean_logits.cpu().detach().numpy()
 
             if of is not None:
+                dsc_ofile = of + '_mc_dsc.json'
+                print(f'Saving pairwise DSCs to {dsc_ofile}')
+                save_json(dsc_dict, dsc_ofile)
+                
                 export_prediction_from_logits(prediction, data_properties, self.configuration_manager, self.plans_manager,
                                               self.dataset_json, of, save_probabilities)
                 
@@ -411,10 +454,7 @@ class nnUNetPredictorMC(nnUNetPredictor):
                         metric_map = variance_map if metric == 'variance' else entropy_map
                         metric_np = metric_map.cpu().detach().numpy()
                         suffix = f'_uncertainty_{metric}'
-                        uncertainty_ofile = of.replace(
-                            self.dataset_json['file_ending'], 
-                            suffix + self.dataset_json['file_ending']
-                        )
+                        uncertainty_ofile = of + suffix + self.dataset_json['file_ending']
                         print(f'Saving {metric} uncertainty map sequentially...')
                         export_uncertainty(metric_np, data_properties, self.configuration_manager, self.plans_manager,
                                            uncertainty_ofile)
