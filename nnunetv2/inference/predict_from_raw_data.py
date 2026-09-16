@@ -231,7 +231,8 @@ class nnUNetPredictor(object):
                            num_processes_segmentation_export: int = default_num_processes,
                            folder_with_segs_from_prev_stage: str = None,
                            num_parts: int = 1,
-                           part_id: int = 0):
+                           part_id: int = 0,
+                           folder_for_probabilities: str = None):
         """
         This is nnU-Net's default function for making predictions. It works best for batch predictions
         (predicting many images at once).
@@ -283,7 +284,7 @@ class nnUNetPredictor(object):
                                                                                  output_filename_truncated,
                                                                                  num_processes_preprocessing)
 
-        return self.predict_from_data_iterator(data_iterator, save_probabilities, num_processes_segmentation_export)
+        return self.predict_from_data_iterator(data_iterator, save_probabilities, num_processes_segmentation_export, folder_for_probabilities)
 
     def _internal_get_data_iterator_from_lists_of_filenames(self,
                                                             input_list_of_lists: List[List[str]],
@@ -357,18 +358,20 @@ class nnUNetPredictor(object):
                                         truncated_ofname: Union[str, List[str], None],
                                         num_processes: int = 3,
                                         save_probabilities: bool = False,
-                                        num_processes_segmentation_export: int = default_num_processes):
+                                        num_processes_segmentation_export: int = default_num_processes,
+                                        folder_for_probabilities: str = None):
         iterator = self.get_data_iterator_from_raw_npy_data(image_or_list_of_images,
                                                             segs_from_prev_stage_or_list_of_segs_from_prev_stage,
                                                             properties_or_list_of_properties,
                                                             truncated_ofname,
                                                             num_processes)
-        return self.predict_from_data_iterator(iterator, save_probabilities, num_processes_segmentation_export)
+        return self.predict_from_data_iterator(iterator, save_probabilities, num_processes_segmentation_export, folder_for_probabilities)
 
     def predict_from_data_iterator(self,
                                    data_iterator,
                                    save_probabilities: bool = False,
-                                   num_processes_segmentation_export: int = default_num_processes):
+                                   num_processes_segmentation_export: int = default_num_processes,
+                                   folder_for_probabilities: str = None):
         """
         each element returned by data_iterator must be a dict with 'data', 'ofile' and 'data_properties' keys!
         If 'ofile' is None, the result will be returned instead of written to a file
@@ -409,7 +412,7 @@ class nnUNetPredictor(object):
                         export_pool.apply_async(
                             export_prediction_from_logits,
                             (prediction, properties, self.configuration_manager, self.plans_manager,
-                             self.dataset_json, ofile, save_probabilities)
+                             self.dataset_json, ofile, save_probabilities, folder_for_probabilities)
                         )
                     )
                 else:
@@ -722,7 +725,8 @@ class nnUNetPredictor(object):
                            output_folder_or_list_of_truncated_output_files: Union[str, None, List[str]],
                            save_probabilities: bool = False,
                            overwrite: bool = True,
-                           folder_with_segs_from_prev_stage: str = None):
+                           folder_with_segs_from_prev_stage: str = None,
+                           folder_for_probabilities: str = None):
         """
         Just like predict_from_files but doesn't use any multiprocessing. Slow, but sometimes necessary
         """
@@ -794,7 +798,7 @@ class nnUNetPredictor(object):
 
             if of is not None:
                 export_prediction_from_logits(prediction, data_properties, self.configuration_manager, self.plans_manager,
-                  self.dataset_json, of, save_probabilities)
+                  self.dataset_json, of, save_probabilities, folder_for_probabilities)
             else:
                 ret.append(convert_predicted_logits_to_segmentation_with_correct_shape(prediction, self.plans_manager,
                      self.configuration_manager, self.label_manager,
@@ -843,6 +847,8 @@ def predict_entry_point_modelfolder():
     parser.add_argument('--save_probabilities', action='store_true',
                         help='Set this to export predicted class "probabilities". Required if you want to ensemble '
                              'multiple configurations.')
+    parser.add_argument('-prob_folder', type=str, required=False, default=None,
+                        help='Folder where probability maps will be saved. Must be used with --save_probabilities.')
     parser.add_argument('--continue_prediction', '--c', action='store_true',
                         help='Continue an aborted previous prediction (will not overwrite existing files)')
     parser.add_argument('-chk', type=str, required=False, default='checkpoint_final.pth',
@@ -908,7 +914,8 @@ def predict_entry_point_modelfolder():
                                  num_processes_preprocessing=args.npp,
                                  num_processes_segmentation_export=args.nps,
                                  folder_with_segs_from_prev_stage=args.prev_stage_predictions,
-                                 num_parts=1, part_id=0)
+                                 num_parts=1, part_id=0,
+                                 folder_for_probabilities=args.prob_folder)
 
 
 def predict_entry_point():
@@ -947,6 +954,8 @@ def predict_entry_point():
     parser.add_argument('--save_probabilities', action='store_true',
                         help='Set this to export predicted class "probabilities". Required if you want to ensemble '
                              'multiple configurations.')
+    parser.add_argument('-prob_folder', type=str, required=False, default=None,
+                        help='Folder where probability maps will be saved. Must be used with --save_probabilities.')
     parser.add_argument('--continue_prediction', action='store_true',
                         help='Continue an aborted previous prediction (will not overwrite existing files)')
     parser.add_argument('-chk', type=str, required=False, default='checkpoint_final.pth',
@@ -1032,7 +1041,8 @@ def predict_entry_point():
         print("Running in non-multiprocessing mode")
         predictor.predict_from_files_sequential(args.i, args.o, save_probabilities=args.save_probabilities,
                                                 overwrite=not args.continue_prediction,
-                                                folder_with_segs_from_prev_stage=args.prev_stage_predictions)
+                                                folder_with_segs_from_prev_stage=args.prev_stage_predictions,
+                                                folder_for_probabilities=args.prob_folder)
 
     else:
 
@@ -1042,7 +1052,8 @@ def predict_entry_point():
                                     num_processes_segmentation_export=args.nps,
                                     folder_with_segs_from_prev_stage=args.prev_stage_predictions,
                                     num_parts=args.num_parts,
-                                    part_id=args.part_id)
+                                    part_id=args.part_id,
+                                    folder_for_probabilities=args.prob_folder)
 
     # r = predict_from_raw_data(args.i,
     #                           args.o,

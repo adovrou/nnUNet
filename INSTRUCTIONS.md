@@ -89,3 +89,13 @@ nnUNetv2_predict -i INPUT_FOLDER -o OUTPUT_FOLDER -d DATASET_NAME_OR_ID -c CONFI
 
 nnUNetv2_predict -i imagesTs -o pred_nnUnet_test -d 1 -c 3d_fullres -f 0
 ```
+
+### Save probability maps
+
+To save probability maps, you can run an inference command like: 
+
+```
+nnUNetv2_predict -i [INPUT_FOLDER] -o [OUTPUT_FOLDER] -d [DATASET_NAME_OR_ID] -c [CONFIGURATION] --save_probabilities -prob_folder [PROBABILITIES_FOLDER]
+
+nnUNetv2_predict -i imagesTs -o pred_nnUnet_test -d 1 -c 3d_fullres -f 0 --save_probabilities -prob_folder pred_nnUnet_test_probs_map
+```

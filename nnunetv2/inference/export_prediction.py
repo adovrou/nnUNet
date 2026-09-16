@@ -2,8 +2,9 @@ from typing import Union, List
 
 import numpy as np
 import torch
+import os
 from acvl_utils.cropping_and_padding.bounding_boxes import insert_crop_into_image
-from batchgenerators.utilities.file_and_folder_operations import load_json, save_pickle
+from batchgenerators.utilities.file_and_folder_operations import load_json, save_pickle, maybe_mkdir_p, join
 
 from nnunetv2.configuration import default_num_processes
 from nnunetv2.training.dataloading.nnunet_dataset import nnUNetDatasetBlosc2
@@ -76,6 +77,7 @@ def export_prediction_from_logits(predicted_array_or_file: Union[np.ndarray, tor
                                   plans_manager: PlansManager,
                                   dataset_json_dict_or_file: Union[dict, str], output_file_truncated: str,
                                   save_probabilities: bool = False,
+                                  folder_for_probabilities: str = None,
                                   num_threads_torch: int = default_num_processes):
     # if isinstance(predicted_array_or_file, str):
     #     tmp = deepcopy(predicted_array_or_file)
@@ -100,6 +102,24 @@ def export_prediction_from_logits(predicted_array_or_file: Union[np.ndarray, tor
         segmentation_final, probabilities_final = ret
         np.savez_compressed(output_file_truncated + '.npz', probabilities=probabilities_final)
         save_pickle(properties_dict, output_file_truncated + '.pkl')
+        
+        if folder_for_probabilities is not None:
+            maybe_mkdir_p(folder_for_probabilities)
+            prob_fname = join(folder_for_probabilities, os.path.basename(output_file_truncated) + dataset_json_dict_or_file['file_ending'])
+            
+            # Extract probability for foreground positive class (index 1)
+            fg_prob = np.array(probabilities_final[1], dtype=np.float32)
+            
+            # We use a numpy subclass to bypass the uint8/uint16 casting in rw.write_seg
+            class KeepFloat32(np.ndarray):
+                def astype(self, *args, **kwargs):
+                    return self
+            
+            fg_prob_view = fg_prob.view(KeepFloat32)
+            
+            rw = plans_manager.image_reader_writer_class()
+            rw.write_seg(fg_prob_view, prob_fname, properties_dict)
+            
         del probabilities_final, ret
     else:
         segmentation_final = ret
