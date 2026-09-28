@@ -7,7 +7,7 @@ import SimpleITK as sitk
 import shutil
 import json
 
-def convert_data(data: pd.DataFrame, count:int, path_images: Path | str, path_labels: Path | str=None):
+def convert_data(path_base: Path | str, data: pd.DataFrame, count:int, path_images: Path | str, path_labels: Path | str=None):
     mapping = {
         'dataset': [],
         'nodule': [],
@@ -117,9 +117,9 @@ if __name__ == "__main__":
 
     # # convert data (update names and copy data to the new location)
     # count = 0 
-    # train_mapping, count = convert_data(train_cases, count, path_imagesTr, path_labelsTr)
-    # val_mapping, count = convert_data(val_cases, count, path_imagesTr, path_labelsTr)
-    # test_mapping, count = convert_data(test_cases, count, path_imagesTs)
+    # train_mapping, count = convert_data(path_base, train_cases, count, path_imagesTr, path_labelsTr)
+    # val_mapping, count = convert_data(path_base, val_cases, count, path_imagesTr, path_labelsTr)
+    # test_mapping, count = convert_data(path_base, test_cases, count, path_imagesTs)
 
     # # save the mapping to a CSV file
     # pd.DataFrame(train_mapping).to_csv(path_base.joinpath('Data/train_mapping.csv'), index=False)
