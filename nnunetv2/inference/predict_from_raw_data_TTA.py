@@ -25,6 +25,9 @@ from monai.transforms import (
 )
 from monai.data import MetaTensor
 
+import monai
+monai.utils.set_determinism(seed=42)
+
 # Ensure compiled models are disabled
 os.environ['nnUNet_compile'] = 'False'
 
